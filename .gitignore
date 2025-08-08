@@ -1,0 +1,49 @@
+# Flutter/Dart/Pub
+.dart_tool/
+.packages
+.pub-cache/
+build/
+flutter_*.png
+
+# Android
+android/.gradle/
+android/app/build/
+*.iml
+.gradle/
+local.properties
+
+# iOS/macOS
+ios/Pods/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/App.framework
+macos/Flutter/Flutter.framework
+macos/Flutter/App.framework
+macos/Pods/
+macos/.symlinks/
+macos/Flutter/GeneratedPluginRegistrant.swift
+
+# Linux/Windows
+linux/flutter/ephemeral/
+linux/Flutter/ephemeral/
+windows/flutter/ephemeral/
+windows/Flutter/ephemeral/
+
+# Xcode
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+*.xcworkspace/
+xcuserdata/
+
+# VS Code/Android Studio
+.idea/
+.vscode/
+
+# Misc
+*.log
+*.lock
+*.tmp
+*.swp
