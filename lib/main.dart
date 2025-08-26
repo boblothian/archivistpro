@@ -1,22 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
-import 'home_page_screen.dart'; // <-- new import for home screen
+import 'home_page_screen.dart';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  final tempDir = await getTemporaryDirectory();
-  if (tempDir.existsSync()) {
-    for (var file in tempDir.listSync()) {
-      final ext = file.path.toLowerCase();
-      if (ext.endsWith('.pdf') || ext.endsWith('.epub')) {
-        file.deleteSync();
-      }
-    }
-  }
-
-  runApp(ArchiveReaderApp());
+  runApp(const ArchiveReaderApp());
 }
 
 class ArchiveReaderApp extends StatelessWidget {
@@ -24,10 +12,39 @@ class ArchiveReaderApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    const seed = Colors.indigo;
+
     return MaterialApp(
-      title: 'Archive Reader',
-      theme: ThemeData(primarySwatch: Colors.indigo),
-      home: HomePageScreen(), // <-- use new home screen here
+      title: 'Archivist',
+      debugShowCheckedModeBanner: false,
+      themeMode: ThemeMode.system,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: seed,
+        brightness: Brightness.light,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
+        cardTheme: const CardThemeData(
+          elevation: 2,
+          margin: EdgeInsets.all(8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(18)),
+          ),
+        ),
+      ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: seed,
+        brightness: Brightness.dark,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
+        cardTheme: const CardThemeData(
+          elevation: 2,
+          margin: EdgeInsets.all(8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(18)),
+          ),
+        ),
+      ),
+      home: const HomePageScreen(),
     );
   }
 }
