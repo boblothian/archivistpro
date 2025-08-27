@@ -52,6 +52,9 @@ String _sortParam(SortMode m) {
   }
 }
 
+//search parameters
+enum SearchScope { metadata, title }
+
 // ---------- Simple favourites/downloaded stores ----------
 class _FavoritesStore {
   static const _key = 'favourites_identifiers';
@@ -108,6 +111,236 @@ class CollectionDetailScreen extends StatefulWidget {
   State<CollectionDetailScreen> createState() => _CollectionDetailScreenState();
 }
 
+class _VideoVariant {
+  final String url;
+  final String label;
+  final String ext; // mp4, mkv, m3u8...
+  final int? height; // 1080, 720...
+  final int? width;
+  final int? sizeBytes; // from metadata when present
+  final bool isHls;
+  final String? format; // IA format string, if present
+
+  const _VideoVariant({
+    required this.url,
+    required this.label,
+    required this.ext,
+    required this.isHls,
+    this.height,
+    this.width,
+    this.sizeBytes,
+    this.format,
+  });
+}
+
+int? _parseHeightFromName(String lowerName) {
+  final m1 = RegExp(r'(\d{3,4})p').firstMatch(lowerName);
+  if (m1 != null) return int.tryParse(m1.group(1)!);
+  final m2 = RegExp(r'(\d{3,4})[xX](\d{3,4})').firstMatch(lowerName);
+  if (m2 != null) return int.tryParse(m2.group(2)!);
+  return null;
+}
+
+String _fmtBytes(int n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  double size = n.toDouble();
+  int i = 0;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  return '${size.toStringAsFixed(size >= 10 ? 0 : 1)} ${units[i]}';
+}
+
+String _buildVariantLabel({
+  required bool isHls,
+  required String ext,
+  int? height,
+  int? sizeBytes,
+  String? format,
+}) {
+  if (isHls) return 'Adaptive (HLS)';
+  final parts = <String>[];
+  if (height != null) parts.add('${height}p');
+  parts.add(ext.toUpperCase());
+  if (sizeBytes != null && sizeBytes > 0) parts.add(_fmtBytes(sizeBytes));
+  // Avoid long/noisy format strings; show short codec hints if useful.
+  if (format != null && format.isNotEmpty) {
+    final short = format
+        .replaceAll(RegExp(r'\s+Video', caseSensitive: false), '')
+        .replaceAll(RegExp(r'MPEG-4', caseSensitive: false), 'MP4');
+    if (short.length <= 16) parts.add(short);
+  }
+  return parts.join(' • ');
+}
+
+List<_VideoVariant> _extractVideoVariants(String identifier, List files) {
+  final exts = ['.mp4', '.mkv', '.mov', '.webm', '.ogv', '.avi', '.m3u8'];
+  final variants = <_VideoVariant>[];
+
+  for (final file in files) {
+    final name = (file['name'] ?? '').toString();
+    final lower = name.toLowerCase();
+    if (!exts.any((e) => lower.endsWith(e))) continue;
+
+    final url = 'https://archive.org/download/$identifier/$name';
+    final isHls = lower.endsWith('.m3u8');
+    final ext = isHls ? 'm3u8' : p.extension(lower).replaceFirst('.', '');
+
+    final heightMeta = int.tryParse('${file['height'] ?? ''}');
+    final widthMeta = int.tryParse('${file['width'] ?? ''}');
+    final sizeBytes = int.tryParse('${file['size'] ?? ''}');
+    final fmt = file['format']?.toString();
+
+    final height = heightMeta ?? _parseHeightFromName(lower);
+
+    final label = _buildVariantLabel(
+      isHls: isHls,
+      ext: ext,
+      height: height,
+      sizeBytes: sizeBytes,
+      format: fmt,
+    );
+
+    variants.add(
+      _VideoVariant(
+        url: url,
+        label: label,
+        ext: ext,
+        isHls: isHls,
+        height: height,
+        width: widthMeta,
+        sizeBytes: sizeBytes,
+        format: fmt,
+      ),
+    );
+  }
+
+  // Sort: HLS first (adaptive), then by height desc, else by size desc as a proxy.
+  variants.sort((a, b) {
+    if (a.isHls != b.isHls) return a.isHls ? -1 : 1;
+    final ah = a.height ?? 0, bh = b.height ?? 0;
+    if (ah != bh) return bh.compareTo(ah);
+    final asz = a.sizeBytes ?? 0, bsz = b.sizeBytes ?? 0;
+    return bsz.compareTo(asz);
+  });
+
+  return variants;
+}
+
+Future<int?> _getPreferredVideoHeight() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getInt('preferred_video_height');
+}
+
+Future<void> _setPreferredVideoHeight(int height) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setInt('preferred_video_height', height);
+}
+
+_VideoVariant _bestMatchForHeight(List<_VideoVariant> list, int pref) {
+  // pick the highest <= pref; else the closest above
+  _VideoVariant? candidate;
+  for (final v in list) {
+    if (v.height == null) continue;
+    if ((v.height!) <= pref) {
+      if (candidate == null || (v.height!) > (candidate.height ?? 0)) {
+        candidate = v;
+      }
+    }
+  }
+  return candidate ?? list.first;
+}
+
+// ✅ FIX: pass BuildContext in; remove mounted usage here
+Future<_VideoVariant?> _pickVideoVariant(
+  BuildContext context,
+  String title,
+  List<_VideoVariant> variants,
+) async {
+  if (variants.isEmpty) return null;
+  if (variants.length == 1) return variants.first;
+
+  final pref = await _getPreferredVideoHeight();
+  _VideoVariant initial =
+      pref != null ? _bestMatchForHeight(variants, pref) : variants.first;
+
+  return showModalBottomSheet<_VideoVariant>(
+    context: context,
+    showDragHandle: true,
+    builder: (context) {
+      _VideoVariant selected = initial;
+      bool remember = true; // remember last choice by default
+
+      return StatefulBuilder(
+        builder: (context, setSheet) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: Text('Choose quality'),
+                  subtitle: Text(
+                    title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const Divider(height: 1),
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: variants.length,
+                    itemBuilder: (context, i) {
+                      final v = variants[i];
+                      return RadioListTile<_VideoVariant>(
+                        value: v,
+                        groupValue: selected,
+                        onChanged: (nv) => setSheet(() => selected = nv!),
+                        title: Text(v.label),
+                        subtitle:
+                            v.isHls ? const Text('Adaptive bitrate') : null,
+                      );
+                    },
+                  ),
+                ),
+                SwitchListTile(
+                  title: const Text('Remember this quality'),
+                  value: remember,
+                  onChanged: (v) => setSheet(() => remember = v),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Row(
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, null),
+                        child: const Text('Cancel'),
+                      ),
+                      const Spacer(),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          if (remember && (selected.height != null)) {
+                            await _setPreferredVideoHeight(selected.height!);
+                          }
+                          Navigator.pop(context, selected);
+                        },
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('Play'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
 class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
   List<Map<String, String>> _items = [];
   bool _loading = true;
@@ -118,6 +351,9 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
 
   // 🔽 current sort mode
   SortMode _sort = SortMode.popularAllTime;
+
+  //current search scope
+  SearchScope _searchScope = SearchScope.metadata;
 
   @override
   void initState() {
@@ -176,7 +412,10 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     final String baseQuery =
         widget.customQuery ?? 'collection:${widget.collectionName}';
 
-    const fieldsToSearch = ['title', 'subject', 'description', 'creator'];
+    final fieldsToSearch =
+        _searchScope == SearchScope.metadata
+            ? ['title', 'subject', 'description', 'creator']
+            : ['title'];
 
     String fullQuery;
     if (searchQuery.isNotEmpty) {
@@ -185,6 +424,11 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
       fullQuery = '($baseQuery) AND ($orClause)';
     } else {
       fullQuery = baseQuery;
+    }
+
+    // ✅ server-side SFW (before request)
+    if (widget.filters.sfwOnly) {
+      fullQuery = '($fullQuery)${SfwFilter.serverExclusionSuffix()}';
     }
 
     final flParams = [
@@ -213,23 +457,49 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
         final json = jsonDecode(response.body);
         final docs = (json['response']['docs'] as List?) ?? [];
 
+        String _flat(dynamic v) {
+          if (v == null) return '';
+          if (v is List)
+            return v.whereType<Object>().map((e) => e.toString()).join(', ');
+          return v.toString();
+        }
+
         List<Map<String, String>> items =
             docs.map<Map<String, String>>((doc) {
               final id = (doc['identifier'] ?? '').toString();
               return {
                 'identifier': id,
-                'title': (doc['title'] ?? 'No Title').toString(),
+                'title':
+                    (_flat(doc['title']).isEmpty
+                        ? 'No Title'
+                        : _flat(doc['title'])),
                 'thumb': _thumbForId(id),
-                'mediatype': (doc['mediatype'] ?? '').toString(),
-                'description': (doc['description'] ?? '').toString(),
-                'creator': (doc['creator'] ?? '').toString(),
-                'subject': (doc['subject'] ?? '').toString(),
+                'mediatype': _flat(doc['mediatype']),
+                'description': _flat(doc['description']),
+                'creator': _flat(doc['creator']),
+                'subject': _flat(doc['subject']), // <-- flattened tags
               };
             }).toList();
 
-        // ✅ Apply client-side SFW (title + identifier only)
+        // ✅ FIX: client-side SFW actually filters `items`
         if (widget.filters.sfwOnly) {
-          items = items.where(SfwFilter.isClean).toList();
+          var filtered = items.where(SfwFilter.isClean).toList();
+
+          // optional fail-open to avoid empty results on niche collections
+          if (filtered.isEmpty && searchQuery.isEmpty) {
+            final strong = RegExp(
+              r'(?i)\b(nsfw|xxx|porn(?:ography)?|hentai|r-?18|18\+|fetish|hardcore)\b',
+            );
+            bool titleIdClean(Map<String, String> m) {
+              final t = m['title'] ?? '';
+              final i = m['identifier'] ?? '';
+              return !strong.hasMatch(t) && !strong.hasMatch(i);
+            }
+
+            filtered = items.where(titleIdClean).toList();
+          }
+
+          items = filtered;
         }
 
         // Favourites filter
@@ -320,22 +590,62 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
           preferredSize: const Size.fromHeight(56),
           child: Padding(
             padding: const EdgeInsets.all(8.0),
-            child: TextField(
-              controller: _searchCtrl,
-              textInputAction: TextInputAction.search,
-              onSubmitted: (_) => _runSearch(),
-              decoration: InputDecoration(
-                hintText: 'Search metadata (min 3 chars)…',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.arrow_forward),
-                  onPressed: _runSearch,
-                  tooltip: 'Search',
+            child: Row(
+              children: [
+                // Search input
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (_) => _runSearch(),
+                    decoration: InputDecoration(
+                      hintText:
+                          _searchScope == SearchScope.metadata
+                              ? 'Search metadata (min 3 chars)…'
+                              : 'Search titles (min 3 chars)…',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.arrow_forward),
+                        onPressed: _runSearch,
+                        tooltip: 'Search',
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
                 ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                const SizedBox(width: 8),
+                // Scope dropdown
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Theme.of(context).dividerColor),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<SearchScope>(
+                      value: _searchScope,
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(() => _searchScope = value);
+                        // Optionally re-run search immediately with the new scope:
+                        _runSearch();
+                      },
+                      items: const [
+                        DropdownMenuItem(
+                          value: SearchScope.metadata,
+                          child: Text('Metadata'),
+                        ),
+                        DropdownMenuItem(
+                          value: SearchScope.title,
+                          child: Text('Title'),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
         ),
@@ -444,19 +754,14 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
 
     final files = json['files'] as List<dynamic>;
 
-    final videoExtensions = ['.mp4', '.webm', '.ogv', '.mkv', '.mov', '.avi'];
-    final videoFiles =
-        files.where((file) {
-          final name = file['name']?.toString().toLowerCase() ?? '';
-          return videoExtensions.any((ext) => name.endsWith(ext));
-        }).toList();
-
-    if (videoFiles.isNotEmpty) {
-      final video = videoFiles.first;
-      final videoUrl =
-          'https://archive.org/download/$identifier/${video['name']}';
+    // ✅ Use quality picker
+    final variants = _extractVideoVariants(identifier, files);
+    if (variants.isNotEmpty) {
       final title = item['title'] ?? identifier;
-      await _playVideo(videoUrl, title); // ✅ system/inbuilt playback
+      final chosen = await _pickVideoVariant(context, title, variants);
+      if (chosen != null) {
+        await _playVideo(chosen.url, title);
+      }
       return;
     }
 
