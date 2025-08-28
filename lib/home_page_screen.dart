@@ -1,5 +1,6 @@
 import 'package:archivereader/services/filters.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'collection_detail_screen.dart';
 import 'reading_lists_screen.dart';
@@ -51,15 +52,51 @@ class HomePageScreen extends StatefulWidget {
 
 class _HomePageScreenState extends State<HomePageScreen> {
   // Quick filter toggles (now hooked up!)
-  bool _sfwOnly = true;
+  bool _sfwOnly = false;
   bool _favouritesOnly = false;
   bool _downloadedOnly = false;
+
+  // Pinned collections
+  static const _pinsKey = 'pinned_collections';
+  List<String> _pinned = [];
 
   ArchiveFilters get _filters => ArchiveFilters(
     sfwOnly: _sfwOnly,
     favouritesOnly: _favouritesOnly,
     downloadedOnly: _downloadedOnly,
   );
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPins();
+  }
+
+  Future<void> _loadPins() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_pinsKey) ?? const <String>[];
+    setState(() => _pinned = List.of(list));
+  }
+
+  Future<void> _addPin(String id) async {
+    final trimmed = id.trim();
+    if (trimmed.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_pinsKey) ?? const <String>[];
+    if (!list.contains(trimmed)) {
+      final updated = [...list, trimmed];
+      await prefs.setStringList(_pinsKey, updated);
+      setState(() => _pinned = updated);
+    }
+  }
+
+  Future<void> _removePin(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_pinsKey) ?? const <String>[];
+    final updated = List.of(list)..remove(id);
+    await prefs.setStringList(_pinsKey, updated);
+    setState(() => _pinned = updated);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -127,6 +164,28 @@ class _HomePageScreenState extends State<HomePageScreen> {
                           ),
                         ),
                       ),
+
+                      // --- My Collections (pinned) ---
+                      if (_pinned.isNotEmpty)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                            child: Text(
+                              'My Collections',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      if (_pinned.isNotEmpty)
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          sliver: _PinnedGrid(
+                            ids: _pinned,
+                            onOpen: (id) => _openCollectionById(id),
+                            onRemove: (id) => _removePin(id),
+                          ),
+                        ),
 
                       // Landing grid of categories
                       SliverPadding(
@@ -226,21 +285,48 @@ class _HomePageScreenState extends State<HomePageScreen> {
     Navigator.of(context).maybePop();
   }
 
+  void _openCollectionById(String id) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder:
+            (_) => CollectionDetailScreen(
+              categoryName: id,
+              collectionName: id,
+              filters: _filters,
+            ),
+      ),
+    );
+  }
+
   void _openSearch() {
     showSearch(context: context, delegate: _SimpleSearchDelegate(_filters));
   }
 
   void _onAddCollection() {
+    final parentContext = context;
+
     showModalBottomSheet(
-      context: context,
+      context: parentContext,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (context) {
+      builder: (sheetContext) {
+        void openCollection(String id) async {
+          // 1) Pin it
+          await _addPin(id);
+          // 2) Close sheet
+          Navigator.pop(sheetContext);
+          // 3) Push collection detail
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _openCollectionById(id);
+          });
+        }
+
         return Padding(
           padding: EdgeInsets.only(
             left: 16,
             right: 16,
-            bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+            bottom: 16 + MediaQuery.of(sheetContext).viewInsets.bottom,
             top: 8,
           ),
           child: Column(
@@ -256,11 +342,30 @@ class _HomePageScreenState extends State<HomePageScreen> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _ChipButton(label: 'internetarchivebooks', filters: _filters),
-                  _ChipButton(label: 'comics_inbox', filters: _filters),
-                  _ChipButton(label: 'videogamemagazines', filters: _filters),
-                  _ChipButton(label: 'hobbymagazines', filters: _filters),
-                  _ChipButton(label: 'cinemamagazines', filters: _filters),
+                  _ChipButton(
+                    label: 'folkscanomy',
+                    onTap: () => openCollection('folkscanomy'),
+                  ),
+                  _ChipButton(
+                    label: 'internetarchivebooks',
+                    onTap: () => openCollection('internetarchivebooks'),
+                  ),
+                  _ChipButton(
+                    label: 'comics_inbox',
+                    onTap: () => openCollection('comics_inbox'),
+                  ),
+                  _ChipButton(
+                    label: 'videogamemagazines',
+                    onTap: () => openCollection('videogamemagazines'),
+                  ),
+                  _ChipButton(
+                    label: 'hobbymagazines',
+                    onTap: () => openCollection('hobbymagazines'),
+                  ),
+                  _ChipButton(
+                    label: 'cinemamagazines',
+                    onTap: () => openCollection('cinemamagazines'),
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -272,18 +377,9 @@ class _HomePageScreenState extends State<HomePageScreen> {
                   border: OutlineInputBorder(),
                 ),
                 onSubmitted: (id) {
-                  Navigator.pop(context);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder:
-                          (_) => CollectionDetailScreen(
-                            categoryName: id,
-                            collectionName: id,
-                            filters: _filters,
-                          ),
-                    ),
-                  );
+                  final trimmed = id.trim();
+                  if (trimmed.isEmpty) return;
+                  openCollection(trimmed);
                 },
               ),
               const SizedBox(height: 16),
@@ -427,6 +523,87 @@ class _CategoriesGrid extends StatelessWidget {
           ),
         );
       }, childCount: items.length),
+    );
+  }
+}
+
+/// Pinned collections grid
+class _PinnedGrid extends StatelessWidget {
+  const _PinnedGrid({
+    required this.ids,
+    required this.onOpen,
+    required this.onRemove,
+  });
+
+  final List<String> ids;
+  final ValueChanged<String> onOpen;
+  final ValueChanged<String> onRemove;
+
+  int _colsFor(double w) {
+    if (w >= 1200) return 5;
+    if (w >= 900) return 4;
+    if (w >= 600) return 3;
+    return 2;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+    final cols = _colsFor(w);
+
+    return SliverGrid(
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: cols,
+        crossAxisSpacing: 16,
+        mainAxisSpacing: 16,
+        childAspectRatio: .9,
+      ),
+      delegate: SliverChildBuilderDelegate((context, index) {
+        final id = ids[index];
+        return Card(
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => onOpen(id),
+            onLongPress: () async {
+              final remove = await showDialog<bool>(
+                context: context,
+                builder:
+                    (ctx) => AlertDialog(
+                      title: const Text('Remove pinned collection?'),
+                      content: Text(id),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('Remove'),
+                        ),
+                      ],
+                    ),
+              );
+              if (remove == true) onRemove(id);
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  const SizedBox(height: 8),
+                  const Icon(Icons.collections_bookmark_outlined, size: 56),
+                  const Spacer(),
+                  Text(
+                    id,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }, childCount: ids.length),
     );
   }
 }
@@ -595,28 +772,12 @@ class MagazinesHubScreen extends StatelessWidget {
 
 /// Quick-select chip for the "Add Collection" sheet (passes filters)
 class _ChipButton extends StatelessWidget {
-  const _ChipButton({required this.label, required this.filters});
+  const _ChipButton({required this.label, required this.onTap});
   final String label;
-  final ArchiveFilters filters;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return ActionChip(
-      label: Text(label),
-      onPressed: () {
-        Navigator.pop(context);
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder:
-                (_) => CollectionDetailScreen(
-                  categoryName: label,
-                  collectionName: label,
-                  filters: filters,
-                ),
-          ),
-        );
-      },
-    );
+    return ActionChip(label: Text(label), onPressed: onTap);
   }
 }

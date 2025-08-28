@@ -5,7 +5,7 @@ class ArchiveFilters {
   final bool downloadedOnly;
 
   const ArchiveFilters({
-    this.sfwOnly = true,
+    this.sfwOnly = false,
     this.favouritesOnly = false,
     this.downloadedOnly = false,
   });
@@ -14,8 +14,7 @@ class ArchiveFilters {
     bool? sfwOnly,
     bool? favouritesOnly,
     bool? downloadedOnly,
-  }) {
-    return ArchiveFilters(
+  }) {    return ArchiveFilters(
       sfwOnly: sfwOnly ?? this.sfwOnly,
       favouritesOnly: favouritesOnly ?? this.favouritesOnly,
       downloadedOnly: downloadedOnly ?? this.downloadedOnly,

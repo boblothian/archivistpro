@@ -164,7 +164,6 @@ String _buildVariantLabel({
   if (height != null) parts.add('${height}p');
   parts.add(ext.toUpperCase());
   if (sizeBytes != null && sizeBytes > 0) parts.add(_fmtBytes(sizeBytes));
-  // Avoid long/noisy format strings; show short codec hints if useful.
   if (format != null && format.isNotEmpty) {
     final short = format
         .replaceAll(RegExp(r'\s+Video', caseSensitive: false), '')
@@ -216,7 +215,6 @@ List<_VideoVariant> _extractVideoVariants(String identifier, List files) {
     );
   }
 
-  // Sort: HLS first (adaptive), then by height desc, else by size desc as a proxy.
   variants.sort((a, b) {
     if (a.isHls != b.isHls) return a.isHls ? -1 : 1;
     final ah = a.height ?? 0, bh = b.height ?? 0;
@@ -239,7 +237,6 @@ Future<void> _setPreferredVideoHeight(int height) async {
 }
 
 _VideoVariant _bestMatchForHeight(List<_VideoVariant> list, int pref) {
-  // pick the highest <= pref; else the closest above
   _VideoVariant? candidate;
   for (final v in list) {
     if (v.height == null) continue;
@@ -355,6 +352,9 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
   //current search scope
   SearchScope _searchScope = SearchScope.metadata;
 
+  // 🔖 Pinned collections key
+  static const _pinsKey = 'pinned_collections';
+
   @override
   void initState() {
     super.initState();
@@ -378,7 +378,6 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     final uri = Uri.parse(url);
 
     if (Platform.isAndroid) {
-      // Launch the system/default video-capable app via Intent.
       final intent = AndroidIntent(
         action: 'action_view',
         data: uri.toString(),
@@ -390,7 +389,6 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     }
 
     if (Platform.isIOS) {
-      // iOS uses AVPlayer; present your in-app player screen.
       if (!mounted) return;
       Navigator.push(
         context,
@@ -401,7 +399,6 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
       return;
     }
 
-    // Desktop/other fallback: open externally (may be a browser)
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
@@ -426,7 +423,7 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
       fullQuery = baseQuery;
     }
 
-    // ✅ server-side SFW (before request)
+    // Server-side SFW filter on SUBJECT metadata only
     if (widget.filters.sfwOnly) {
       fullQuery = '($fullQuery)${SfwFilter.serverExclusionSuffix()}';
     }
@@ -438,7 +435,6 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
       'subject',
       'creator',
       'description',
-      // you can add 'publicdate' if you want to display it
     ].map((f) => 'fl[]=$f').join('&');
 
     // 🔽 use selected sort mode
@@ -477,28 +473,16 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                 'mediatype': _flat(doc['mediatype']),
                 'description': _flat(doc['description']),
                 'creator': _flat(doc['creator']),
-                'subject': _flat(doc['subject']), // <-- flattened tags
+                'subject': _flat(doc['subject']),
               };
             }).toList();
 
-        // ✅ FIX: client-side SFW actually filters `items`
+        // Client-side SFW filter using subject metadata
         if (widget.filters.sfwOnly) {
           var filtered = items.where(SfwFilter.isClean).toList();
-
-          // optional fail-open to avoid empty results on niche collections
           if (filtered.isEmpty && searchQuery.isEmpty) {
-            final strong = RegExp(
-              r'(?i)\b(nsfw|xxx|porn(?:ography)?|hentai|r-?18|18\+|fetish|hardcore)\b',
-            );
-            bool titleIdClean(Map<String, String> m) {
-              final t = m['title'] ?? '';
-              final i = m['identifier'] ?? '';
-              return !strong.hasMatch(t) && !strong.hasMatch(i);
-            }
-
-            filtered = items.where(titleIdClean).toList();
+            filtered = items;
           }
-
           items = filtered;
         }
 
@@ -543,8 +527,84 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     }
   }
 
+  // 🔖 Pin a collection id to home (SharedPreferences)
+  Future<void> _pinCollection(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_pinsKey) ?? const <String>[];
+    if (!list.contains(id)) {
+      final updated = [...list, id];
+      await prefs.setStringList(_pinsKey, updated);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Added "$id" to My Collections')));
+  }
+
+  // Long-press menu for collections
+  Future<void> _onLongPressItem(Map<String, String> item) async {
+    final isCollection =
+        (item['mediatype'] ?? '').toLowerCase() == 'collection';
+    if (!isCollection) return;
+
+    final id = item['identifier'] ?? '';
+    final title = item['title'] ?? id;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder:
+          (ctx) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.collections_bookmark_outlined),
+                  title: const Text('Add to Home'),
+                  subtitle: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    if (id.isNotEmpty) await _pinCollection(id);
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.open_in_new),
+                  title: const Text('Open Collection'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _openCollection(item);
+                  },
+                ),
+              ],
+            ),
+          ),
+    );
+  }
+
+  void _openCollection(Map<String, String> item) {
+    final identifier = item['identifier']!;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder:
+            (_) => CollectionDetailScreen(
+              categoryName: item['title'] ?? identifier,
+              collectionName: identifier,
+              filters: widget.filters,
+            ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.categoryName),
@@ -629,7 +689,6 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                       onChanged: (value) {
                         if (value == null) return;
                         setState(() => _searchScope = value);
-                        // Optionally re-run search immediately with the new scope:
                         _runSearch();
                       },
                       items: const [
@@ -679,9 +738,18 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                 itemBuilder: (context, index) {
                   final item = _items[index];
                   final id = item['identifier']!;
+                  final isCollection =
+                      (item['mediatype'] ?? '').toLowerCase() == 'collection';
+
+                  // 🎨 Slightly darker card color for collections
+                  final Color? cardColor =
+                      isCollection ? cs.surfaceContainerHighest : null;
+
                   return GestureDetector(
                     onTap: () => _openItem(context, item),
+                    onLongPress: () => _onLongPressItem(item), // 👈 hold to pin
                     child: Card(
+                      color: cardColor,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
@@ -883,12 +951,42 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
   }
 
   Future<File> _downloadPdf(String url, String filename) async {
-    final dir = await getTemporaryDirectory();
-    final filePath = p.join(dir.path, filename);
-    final file = File(filePath);
+    final downloads = await _downloadsDir();
+
+    // Try to keep a stable name: <identifier>.<ext>
+    final idFromUrl = _extractIdentifierFromUrl(url);
+    final id =
+        (idFromUrl == null || idFromUrl.isEmpty)
+            ? p.basenameWithoutExtension(filename)
+            : idFromUrl;
+
+    final ext =
+        p.extension(filename).isNotEmpty ? p.extension(filename) : '.pdf';
+    final savePath = p.join(downloads.path, '$id$ext');
+
+    final file = File(savePath);
     if (await file.exists()) return file;
-    final response = await http.get(Uri.parse(url));
-    await file.writeAsBytes(response.bodyBytes);
+
+    final resp = await http.get(Uri.parse(url));
+    if (resp.statusCode != 200) {
+      final fallback = File(p.join(downloads.path, filename));
+      await fallback.writeAsBytes(resp.bodyBytes, flush: true);
+      return fallback;
+    }
+
+    await file.writeAsBytes(resp.bodyBytes, flush: true);
     return file;
+  }
+
+  Future<Directory> _downloadsDir() async {
+    final appDoc = await getApplicationDocumentsDirectory();
+    final d = Directory(p.join(appDoc.path, 'downloads'));
+    if (!await d.exists()) await d.create(recursive: true);
+    return d;
+  }
+
+  String? _extractIdentifierFromUrl(String url) {
+    final m = RegExp(r'/download/([^/]+)/').firstMatch(url);
+    return m?.group(1);
   }
 }

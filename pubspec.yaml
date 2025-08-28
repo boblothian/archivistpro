@@ -1,5 +1,5 @@
 name: archivereader
-description: "A reader for comics stored on archive.org"
+description: "A reader for archive.org"
 publish_to: 'none'
 
 version: 1.0.0+1
